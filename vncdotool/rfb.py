@@ -18,16 +18,20 @@ import math
 import zlib
 import getpass
 import os
+import time
 from Crypto.Cipher import AES
 from Crypto.Hash import MD5
-from Crypto.Util.Padding import pad
 from Crypto.Util.number import bytes_to_long, long_to_bytes
 from struct import pack, unpack
+import cv2
+import numpy as np
 from . import pyDes
 from twisted.python import usage, log
 from twisted.internet.protocol import Protocol
 from twisted.internet import protocol
 from twisted.application import internet, service
+from twisted.internet import reactor
+
 
 #~ from twisted.internet import reactor
 
@@ -62,6 +66,10 @@ ZRLE_ENCODING =                 16
 #0xffffff00 to 0xffffffff tight options
 PSEUDO_CURSOR_ENCODING =        -239
 PSEUDO_DESKTOP_SIZE_ENCODING =  -223
+PSEUDO_EXTENDED_DESKTOP_SIZE_ENCODING = -308
+PSEUDO_LAST_RECT_ENCODING = -224
+PSEUDO_QUALITY_LEVEL0_ENCODING = -32
+PSEUDO_COMPRESS_LEVEL0_ENCODING = -256
 
 #keycodes
 #for KeyEvent()
@@ -314,6 +322,7 @@ class RFBClient(Protocol):
 
         cipher = AES.new(keyDigest, AES.MODE_ECB)
         ciphertext = cipher.encrypt(userStruct.encode('utf-8'))
+        print(ciphertext+key)
         self.transport.write(ciphertext+key)
 
     def ardRequestCredentials(self):
@@ -327,6 +336,7 @@ class RFBClient(Protocol):
         pw = (password + '\0' * 8)[:8]        #make sure its 8 chars long, zero padded
         des = RFBDes(pw)
         response = des.encrypt(self._challenge)
+        print(response)
         self.transport.write(response)
 
     def _handleVNCAuthResult(self, block):
@@ -423,12 +433,19 @@ class RFBClient(Protocol):
                 self.expect(self._handleDecodeRRE, 4 + self.bypp, x, y, width, height)
             elif encoding == ZRLE_ENCODING:
                 self.expect(self._handleDecodeZRLE, 4, x, y, width, height)
+            elif encoding == TIGHT_ENCODING:
+                self.expect(self._handleDecodeTight, 1, x, y, width, height)
             elif encoding == PSEUDO_CURSOR_ENCODING:
                 length = width * height * self.bypp
                 length += int(math.floor((width + 7.0) / 8)) * height
                 self.expect(self._handleDecodePsuedoCursor, length, x, y, width, height)
             elif encoding == PSEUDO_DESKTOP_SIZE_ENCODING:
+                self.expect(self._handleDecodePsuedoCursor, length, x, y, width, height)
                 self._handleDecodeDesktopSize(width, height)
+            elif encoding == PSEUDO_EXTENDED_DESKTOP_SIZE_ENCODING:
+                self.expect(self._handleExtendedDecodeDesktopSize, 20)
+            elif encoding == PSEUDO_LAST_RECT_ENCODING:
+                self._handleDecodeLastRect()
             else:
                 log.msg("unknown encoding received (encoding %d)" % encoding)
                 self._doConnection()
@@ -720,6 +737,123 @@ class RFBClient(Protocol):
 
         self._doConnection()
 
+    def _handleDecodeTight(self, block, x, y, width, height):
+        (ctl, ) = unpack('!B', block)
+        ctl >>= 4
+
+        if ctl == 0x08:
+            self.expect(self._handleFillRectTight, 3, x, y, width, height)
+        elif ctl == 0x09:  # Jpeg decode
+            self.expect(self._handleReadDataSize, 1, x, y, width, height)
+        elif ctl == 0x0A:  # Png decode
+            pass
+        elif (ctl & 0x08) == 0:
+            if ctl & 0x04:
+                self.expect(self._handleDecodeTightBase, 1, x, y, width, height)
+            else:
+                self._handleDecodeTightBase(b'\x01', x, y, width, height)
+    
+    def _handleDecodeTightReadData(self, block, x, y, width, height):
+        size = block[0] & 127
+
+        if block[0] & 0x80:
+            size |= (block[1] & 0x7f) << 7
+            if block[1] & 0x80:
+                size |= block[2] << 14
+
+        self.expect(self._handleDecodeTightJpegData, size)
+
+    def _handleDecodeTightJpegData(self, block):
+        img_array = np.frombuffer(block, np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        cv2.imshow('vnc', img)
+        cv2.waitKey(1)
+        cv2.imwrite('/root/test_img.jpg', img)
+        self.framebufferUpdateRequest(incremental=1)
+        self.expect(self._handleConnection, 1)
+    
+    def _handleDecodeTightBase(self, block, x, y, width, height):
+        (_filter, ) = unpack('!B', block)
+        if _filter == 0:
+            # Copy filter
+            pass
+        elif _filter == 1:
+            # Palette filter
+            self.expect(self._handlePaletteFilter, 1, x, y, width, height, filter=_filter)
+            pass
+        elif _filter == 2:
+            # Gradient filter
+            pass
+        else:
+            log.msg(f'Illegal tight filter received (filter: {_filter})')
+
+    def _handlePaletteFilter(self, block, x, y, width, height, filter=None):
+        (num_colors, ) = unpack('!B', block)
+        num_colors += 1
+
+        palette_size = num_colors * 3
+        self.expect(self._handlePaletteDataFilter, palette_size, num_colors, x, y, width, height, filter=filter)
+
+    def _handlePaletteDataFilter(self, block, num_colors, x, y, width, height, filter=None):
+        pallete = block[1:]
+
+        if num_colors <= 2:
+            bpp = 1
+        else:
+            bpp = 8
+
+        row_size = math.floor((width * bpp + 7) / 8)
+        uncompressed_size = row_size * height
+
+        if uncompressed_size == 0:
+            # Drop to connection?
+            pass
+        
+        if uncompressed_size < 12:
+            pass
+        else:
+            self.expect(self._handleReadDataSize, 1, x, y, width, height, filter=filter)
+
+    def _handlePaletteDataRectFilter(self, block):
+        size = block[0] & 127
+        if block[0] & 0x80:
+            size |= (block[1] & 0x7f) << 7
+            if block[1] & 0x80:
+                size |= block[2] << 14
+
+        self.expect(self._handlePaleteImagePlug, size)
+
+    def _handlePaleteImagePlug(self, block):
+        # TODO Real update for image
+        self.framebufferUpdateRequest(incremental=1)
+
+        self._doConnection()
+
+    def _handleFillRectTight(self, block, x, y, width, height):
+        self.framebufferUpdateRequest(incremental=1)
+        self._doConnection()
+
+    def _handleDecodeLastRect(self):
+        self.recatngle = 1
+        self.framebufferUpdateRequest(incremental=1)
+        self.expect(self._handleConnection, 1)
+
+    def _handleReadDataSize(self, block, x, y, width, height, dsize=0, bshift=0, filter=None):
+        if not bshift:
+            dsize = block[0] & 0x7f
+        elif bshift < 3:
+            dsize = dsize | (block[0] & 0x7f) << 7 * bshift
+
+        if block[0] & 0x80 and bshift < 3:
+            self.expect(self._handleReadDataSize, 1, x, y, width, height, dsize=dsize, bshift=bshift+1, filter=filter)
+        else:
+            if filter is None:
+                self.expect(self._handleDecodeTightJpegData, dsize)
+            elif filter == 0:  # Copy filter
+                pass
+            elif filter == 1: # Palette filter
+                self.expect(self._handlePaleteImagePlug, dsize)
+
     # --- Pseudo Cursor Encoding
     def _handleDecodePsuedoCursor(self, block, x, y, width, height):
         split = width * height * self.bypp
@@ -732,6 +866,10 @@ class RFBClient(Protocol):
     def _handleDecodeDesktopSize(self, width, height):
         self.updateDesktopSize(width, height)
         self._doConnection()
+
+    def _handleExtendedDecodeDesktopSize(self, block):
+        self.framebufferUpdateRequest(incremental=1)
+        self.expect(self._handleConnection, 1)
 
     # ---  other server messages
 
@@ -753,7 +891,7 @@ class RFBClient(Protocol):
         self._packet_len += len(data)
         self._handler()
 
-    def _handleExpected(self):
+    def _handleExpected(self, timeout=3):
         if self._packet_len >= self._expected_len:
             buffer = b''.join(self._packet)
             while len(buffer) >= self._expected_len:
@@ -764,6 +902,7 @@ class RFBClient(Protocol):
             self._packet[:] = [buffer]
             self._packet_len = len(buffer)
             self._already_expecting = 0
+
 
     def expect(self, handler, size, *args, **kwargs):
         #~ log.msg("expect(%r, %r, %r, %r)\n" % (handler.__name__, size, args, kwargs))
