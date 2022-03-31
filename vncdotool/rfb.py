@@ -418,6 +418,7 @@ class RFBClient(Protocol):
 
     def _handleRectangle(self, block):
         (x, y, width, height, encoding) = unpack("!HHHHi", block)
+        print(x, y, width, height, encoding)
         if self.rectangles:
             self.rectangles -= 1
             self.rectanglePos.append( (x, y, width, height) )
@@ -763,12 +764,14 @@ class RFBClient(Protocol):
 
         self.expect(self._handleDecodeTightJpegData, size)
 
-    def _handleDecodeTightJpegData(self, block):
-        img_array = np.frombuffer(block, np.uint8)
-        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        cv2.imshow('vnc', img)
-        cv2.waitKey(1)
-        cv2.imwrite('/root/test_img.jpg', img)
+    def _handleDecodeTightJpegData(self, block, x, y, width, height):
+        #img_array = np.frombuffer(block, np.uint8)
+        #img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        #cv2.imshow('vnc', img)
+        #cv2.waitKey(1000)
+        #cv2.imwrite('test_img.jpg', img)
+        #print('size', img.shape)
+        self.updateRectangle(x, y, width, height, block)
         self.framebufferUpdateRequest(incremental=1)
         self.expect(self._handleConnection, 1)
     
@@ -848,7 +851,7 @@ class RFBClient(Protocol):
             self.expect(self._handleReadDataSize, 1, x, y, width, height, dsize=dsize, bshift=bshift+1, filter=filter)
         else:
             if filter is None:
-                self.expect(self._handleDecodeTightJpegData, dsize)
+                self.expect(self._handleDecodeTightJpegData, dsize, x, y, width, height)
             elif filter == 0:  # Copy filter
                 pass
             elif filter == 1: # Palette filter

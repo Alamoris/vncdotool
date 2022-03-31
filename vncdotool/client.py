@@ -124,7 +124,15 @@ class AuthenticationError(Exception):
 
 
 class VNCDoToolClient(rfb.RFBClient):
-    encoding = rfb.RAW_ENCODING
+    #encoding = rfb.RAW_ENCODING
+    encoding = [rfb.TIGHT_ENCODING,
+                rfb.COPY_RECTANGLE_ENCODING,
+                rfb.PSEUDO_CURSOR_ENCODING,
+                rfb.PSEUDO_DESKTOP_SIZE_ENCODING,
+                rfb.PSEUDO_EXTENDED_DESKTOP_SIZE_ENCODING,
+                rfb.PSEUDO_LAST_RECT_ENCODING,
+                rfb.PSEUDO_QUALITY_LEVEL0_ENCODING + 6,
+                rfb.PSEUDO_COMPRESS_LEVEL0_ENCODING + 2]
     x = 0
     y = 0
     buttons = 0
@@ -376,7 +384,7 @@ class VNCDoToolClient(rfb.RFBClient):
 
     def vncConnectionMade(self):
         self.setImageMode()
-        encodings = [self.encoding]
+        encodings = self.encoding
         if self.factory.pseudocursor or self.factory.nocursor:
             encodings.append(rfb.PSEUDO_CURSOR_ENCODING)
         if self.factory.pseudodesktop:
@@ -398,9 +406,15 @@ class VNCDoToolClient(rfb.RFBClient):
         # ignore empty updates
         if not data:
             return
+        import io
+
+        imaged = io.BytesIO(data)
 
         size = (width, height)
-        update = Image.frombytes('RGB', size, data, 'raw', self.image_mode)
+        self.image_mode = 'RGBX'
+
+        #update = Image.frombytes('RGB', size, data, 'raw', self.image_mode)
+        update = Image.open(io.BytesIO(data))
         if not self.screen:
             self.screen = update
         # track upward screen resizes, often occurs during os boot of VMs
