@@ -124,15 +124,8 @@ class AuthenticationError(Exception):
 
 
 class VNCDoToolClient(rfb.RFBClient):
-    #encoding = rfb.RAW_ENCODING
-    encoding = [rfb.TIGHT_ENCODING,
-                rfb.COPY_RECTANGLE_ENCODING,
-                rfb.PSEUDO_CURSOR_ENCODING,
-                rfb.PSEUDO_DESKTOP_SIZE_ENCODING,
-                rfb.PSEUDO_EXTENDED_DESKTOP_SIZE_ENCODING,
-                rfb.PSEUDO_LAST_RECT_ENCODING,
-                rfb.PSEUDO_QUALITY_LEVEL0_ENCODING + 6,
-                rfb.PSEUDO_COMPRESS_LEVEL0_ENCODING + 2]
+    encoding = rfb.RAW_ENCODING
+
     x = 0
     y = 0
     buttons = 0
@@ -142,6 +135,7 @@ class VNCDoToolClient(rfb.RFBClient):
 
     cursor = None
     cmask = None
+    my_var = 0
 
     SPECIAL_KEYS_US = "~!@#$%^&*()_+{}|:\"<>?"
 
@@ -257,7 +251,6 @@ class VNCDoToolClient(rfb.RFBClient):
         return d
 
     def _captureSave(self, data, filename, *args):
-        log.debug('captureSave %s', filename)
         if args:
             capture = self.screen.crop(args)
         else:
@@ -408,10 +401,8 @@ class VNCDoToolClient(rfb.RFBClient):
             return
         import io
 
-        imaged = io.BytesIO(data)
-
         size = (width, height)
-        self.image_mode = 'RGBX'
+        self.my_var = 10
 
         #update = Image.frombytes('RGB', size, data, 'raw', self.image_mode)
         update = Image.open(io.BytesIO(data))
@@ -428,8 +419,23 @@ class VNCDoToolClient(rfb.RFBClient):
             self.screen = new_screen
         else:
             self.screen.paste(update, (x, y))
-
         self.drawCursor()
+
+    def update(self):
+        return self._upd()
+
+    def _upd(self, *args):
+        d = self.refreshScreen(1)
+        d.addCallback(self._mock)
+        return d
+
+    def _mock(self, data):
+        return self
+
+    def updScreen(self, incremental=0, *args):
+        d = self.refreshScreen(0)
+        d.addCallback(self.empty, *args)
+        return d
 
     def commitUpdate(self, rectangles):
         if self.deferred:

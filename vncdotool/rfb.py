@@ -418,7 +418,6 @@ class RFBClient(Protocol):
 
     def _handleRectangle(self, block):
         (x, y, width, height, encoding) = unpack("!HHHHi", block)
-        print(x, y, width, height, encoding)
         if self.rectangles:
             self.rectangles -= 1
             self.rectanglePos.append( (x, y, width, height) )
@@ -765,16 +764,10 @@ class RFBClient(Protocol):
         self.expect(self._handleDecodeTightJpegData, size)
 
     def _handleDecodeTightJpegData(self, block, x, y, width, height):
-        #img_array = np.frombuffer(block, np.uint8)
-        #img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        #cv2.imshow('vnc', img)
-        #cv2.waitKey(1000)
-        #cv2.imwrite('test_img.jpg', img)
-        #print('size', img.shape)
         self.updateRectangle(x, y, width, height, block)
         self.framebufferUpdateRequest(incremental=1)
-        self.expect(self._handleConnection, 1)
-    
+        self._doConnection()
+
     def _handleDecodeTightBase(self, block, x, y, width, height):
         (_filter, ) = unpack('!B', block)
         if _filter == 0:
@@ -837,9 +830,8 @@ class RFBClient(Protocol):
         self._doConnection()
 
     def _handleDecodeLastRect(self):
-        self.recatngle = 1
-        self.framebufferUpdateRequest(incremental=1)
-        self.expect(self._handleConnection, 1)
+        self.rectangles = 0
+        self._doConnection()
 
     def _handleReadDataSize(self, block, x, y, width, height, dsize=0, bshift=0, filter=None):
         if not bshift:
@@ -871,8 +863,8 @@ class RFBClient(Protocol):
         self._doConnection()
 
     def _handleExtendedDecodeDesktopSize(self, block):
-        self.framebufferUpdateRequest(incremental=1)
-        self.expect(self._handleConnection, 1)
+        # TODO
+        self._doConnection()
 
     # ---  other server messages
 
